@@ -21,28 +21,23 @@ const ALLOWED = [
 app.use(
   cors({
     origin: (origin, cb) => {
-      // pozwól również na brak Origin (np. curl/healthcheck)
       if (!origin || ALLOWED.includes(origin)) return cb(null, true);
       return cb(new Error('Not allowed by CORS'));
     },
     credentials: false,
   })
 );
-
 app.use(express.json());
 
 // ---------- DB ----------
 mongoose
-  .connect(MONGO_URI, {
-    serverSelectionTimeoutMS: 15000,
-  })
+  .connect(MONGO_URI, { serverSelectionTimeoutMS: 15000 })
   .then(() => console.log('MongoDB connected'))
   .catch((err) => {
     console.error('MongoDB connection error:', err.message);
     process.exit(1);
   });
 
-// Transakcje zapisujemy „append-only”
 const TxSchema = new mongoose.Schema(
   {
     address: { type: String, required: true, index: true, lowercase: true, trim: true },
@@ -52,16 +47,13 @@ const TxSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
-
 const Tx = mongoose.model('tx', TxSchema);
 
 // ---------- ROUTES ----------
 
-// Health
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// Zapis transakcji po zakupie
-// body: { address, tokens, usd, network? }
+// Zapis zakupu
 app.post('/buy', async (req, res) => {
   try {
     let { address, tokens, usd, network } = req.body || {};
@@ -78,14 +70,13 @@ app.post('/buy', async (req, res) => {
   }
 });
 
-// Całkowity balans (ile kto ma tokenów razem)
+// Balans tokenów per address
 app.get('/balances', async (req, res) => {
   try {
     const agg = await Tx.aggregate([
       { $group: { _id: '$address', tokens: { $sum: '$tokens' } } },
       { $project: { _id: 0, address: '$_id', tokens: 1 } },
     ]);
-    // w formacie mapy { address: tokens }
     const out = {};
     agg.forEach((r) => (out[r.address] = r.tokens));
     return res.json(out);
@@ -95,23 +86,31 @@ app.get('/balances', async (req, res) => {
   }
 });
 
-// Leaderboard – TOP 10 osób z największą ilością tokenów
+// Leaderboard (all/daily)
 app.get('/leaderboard', async (req, res) => {
   try {
+    const range = req.query.range || 'all';
+    let match = {};
+    if (range === 'daily') {
+      const from = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      match = { createdAt: { $gte: from } };
+    }
+
     const top = await Tx.aggregate([
+      { $match: match },
       { $group: { _id: '$address', tokens: { $sum: '$tokens' } } },
       { $project: { _id: 0, address: '$_id', tokens: 1 } },
       { $sort: { tokens: -1 } },
       { $limit: 10 },
     ]);
-    return res.json(top);
+    return res.json({ ok: true, data: top });
   } catch (e) {
     console.error('GET /leaderboard error:', e);
     return res.status(500).json({ ok: false });
   }
 });
 
-// Lista ostatnich transakcji (np. 200)
+// Transakcje (ostatnie N)
 app.get('/transactions', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit || '200', 10), 1000);
@@ -123,7 +122,7 @@ app.get('/transactions', async (req, res) => {
   }
 });
 
-// Statystyki (sumy)
+// Statystyki: ile USD podbito, ile tokenów sprzedano
 app.get('/stats', async (req, res) => {
   try {
     const [agg] = await Tx.aggregate([
@@ -156,6 +155,5 @@ app.listen(PORT, () => {
   console.log(`API running at port ${PORT}`);
 });
 
-// Bezpieczniki
 process.on('unhandledRejection', (r) => console.error('unhandledRejection', r));
 process.on('uncaughtException', (e) => console.error('uncaughtException', e));
