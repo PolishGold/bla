@@ -10,6 +10,12 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const MONGO_URI = process.env.MONGO_URI;
 
+// ---------- ENV VALIDATION ----------
+if (!MONGO_URI) {
+  console.error('❌ Missing MONGO_URI environment variable');
+  process.exit(1);
+}
+
 // ---------- CORS ----------
 const ALLOWED = [
   'https://www.bitcoin-baby.com',
@@ -38,6 +44,7 @@ mongoose
     process.exit(1);
   });
 
+// ---------- SCHEMA & MODEL ----------
 const TxSchema = new mongoose.Schema(
   {
     address: { type: String, required: true, index: true, lowercase: true, trim: true },
@@ -51,10 +58,13 @@ const Tx = mongoose.model('tx', TxSchema);
 
 // ---------- ROUTES ----------
 
-app.get('/health', (req, res) => res.json({ ok: true }));
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
+});
 
-// Zapis zakupu
-app.post('/buy', async (req, res) => {
+// Record a purchase
+app.post('/buy', async (req, res, next) => {
   try {
     let { address, tokens, usd, network } = req.body || {};
     if (!address || typeof tokens !== 'number' || typeof usd !== 'number') {
@@ -66,28 +76,28 @@ app.post('/buy', async (req, res) => {
     return res.status(201).json({ ok: true });
   } catch (e) {
     console.error('POST /buy error:', e);
-    return res.status(500).json({ ok: false, error: 'Server error' });
+    next(e);
   }
 });
 
-// Balans tokenów per address
-app.get('/balances', async (req, res) => {
+// Total balances per address
+app.get('/balances', async (req, res, next) => {
   try {
     const agg = await Tx.aggregate([
       { $group: { _id: '$address', tokens: { $sum: '$tokens' } } },
       { $project: { _id: 0, address: '$_id', tokens: 1 } },
     ]);
     const out = {};
-    agg.forEach((r) => (out[r.address] = r.tokens));
-    return res.json(out);
+    agg.forEach(r => (out[r.address] = r.tokens));
+    return res.json({ ok: true, data: out });
   } catch (e) {
     console.error('GET /balances error:', e);
-    return res.status(500).json({ ok: false });
+    next(e);
   }
 });
 
-// Leaderboard (all/daily)
-app.get('/leaderboard', async (req, res) => {
+// Leaderboard (all-time or daily)
+app.get('/leaderboard', async (req, res, next) => {
   try {
     const range = req.query.range || 'all';
     let match = {};
@@ -106,24 +116,24 @@ app.get('/leaderboard', async (req, res) => {
     return res.json({ ok: true, data: top });
   } catch (e) {
     console.error('GET /leaderboard error:', e);
-    return res.status(500).json({ ok: false });
+    next(e);
   }
 });
 
-// Transakcje (ostatnie N)
-app.get('/transactions', async (req, res) => {
+// Recent transactions
+app.get('/transactions', async (req, res, next) => {
   try {
     const limit = Math.min(parseInt(req.query.limit || '200', 10), 1000);
     const txs = await Tx.find().sort({ createdAt: -1 }).limit(limit).lean();
-    return res.json(txs);
+    return res.json({ ok: true, data: txs });
   } catch (e) {
     console.error('GET /transactions error:', e);
-    return res.status(500).json({ ok: false });
+    next(e);
   }
 });
 
-// Statystyki: ile USD podbito, ile tokenów sprzedano
-app.get('/stats', async (req, res) => {
+// Stats: total USD raised, tokens sold, unique buyers
+app.get('/stats', async (req, res, next) => {
   try {
     const [agg] = await Tx.aggregate([
       {
@@ -143,17 +153,24 @@ app.get('/stats', async (req, res) => {
         },
       },
     ]);
-    return res.json(agg || { raised: 0, tokens: 0, buyers: 0 });
+    const data = agg || { raised: 0, tokens: 0, buyers: 0 };
+    return res.json({ ok: true, data });
   } catch (e) {
     console.error('GET /stats error:', e);
-    return res.status(500).json({ ok: false });
+    next(e);
   }
 });
 
-// ---------- SERVER ----------
-app.listen(PORT, () => {
-  console.log(`API running at port ${PORT}`);
+// ---------- ERROR HANDLER ----------
+app.use((err, req, res, next) => {
+  console.error('Unexpected error:', err);
+  res.status(500).json({ ok: false, error: 'Unexpected server error' });
 });
 
-process.on('unhandledRejection', (r) => console.error('unhandledRejection', r));
-process.on('uncaughtException', (e) => console.error('uncaughtException', e));
+// ---------- START SERVER ----------
+app.listen(PORT, () => {
+  console.log(`API running on port ${PORT}`);
+});
+
+process.on('unhandledRejection', r => console.error('unhandledRejection', r));
+process.on('uncaughtException', e => console.error('uncaughtException', e));
